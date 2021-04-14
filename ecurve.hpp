@@ -10,6 +10,11 @@ namespace ecurve {
     const name code = "ecurve3pool1"_n;
     const std::string description = "eCurve Converter";
 
+    const extended_symbol DAI  { symbol{"DAI", 6}, "dadusdtokens"_n };
+    const extended_symbol ECRV  { symbol{"ECRV", 6}, "ecurvetoken1"_n };
+    const extended_symbol DUSDC  { symbol{"USDC", 6}, "dadusdtokens"_n };
+    const extended_symbol USDT { symbol{"USDT",4}, "tethertether"_n };
+
     struct [[eosio::table]] tokenpools1_row {
         uint64_t        id;
         vector<asset>   liquidblc;
