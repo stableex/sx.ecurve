@@ -10,34 +10,21 @@ namespace ecurve {
     const name code = "ecurve3pool1"_n;
     const std::string description = "eCurve Converter";
 
-    /**
-     * pair
-     */
     struct [[eosio::table]] tokenpools1_row {
         uint64_t        id;
         vector<asset>   liquidblc;
-
         uint64_t primary_key() const { return id; }
     };
-    typedef multi_index< "tokenpools1"_n, tokenpools1_row > tokenpools1;
+    typedef eosio::multi_index< "tokenpools1"_n, tokenpools1_row > tokenpools1;
 
-    struct [[eosio::table]] tokeninfo2_row {
-        uint64_t        id;
-        symbol          tokensym;
-        name            tokencontract;
-
-        uint64_t primary_key() const { return id; }
-    };
-    typedef multi_index< "tokeninfo2"_n, tokeninfo2_row > tokeninfo2;
-
-    struct [[eosio::table]] priceinfo_row {
+    struct [[eosio::table]] priceinfo1_row {
         uint64_t        id;
         float_t         price;
         int64_t         D;
 
         uint64_t primary_key() const { return id; }
     };
-    typedef multi_index< "priceinfo"_n, priceinfo_row > priceinfo;
+    typedef eosio::multi_index< "priceinfo1"_n, priceinfo1_row > priceinfo1;
 
     struct [[eosio::table]] config_row {
         uint64_t        initial_A;
@@ -59,69 +46,106 @@ namespace ecurve {
         return _config.get().initial_A;     // TODO: handle Amplifier sliding
     }
 
+    static uint64_t get_fee() {
+        config _config( code, code.value );
+
+        return _config.get().fee * 10000;
+    }
+
 
     static uint64_t get_D() {
-        priceinfo _priceinfo( code, code.value );
+        priceinfo1 _priceinfo1( code, code.value );
+        check(_priceinfo1.begin() != _priceinfo1.end(), "ecurve: priceinfo1 table empty");
 
-        return _priceinfo.begin()->D;     // TODO: multiple pools?
+        return _priceinfo1.begin()->D;
+    }
+
+    static vector<asset> get_reserves() {
+        tokenpools1 _tokenpools1( code, code.value );
+        check(_tokenpools1.begin() != _tokenpools1.end(), "ecurve: tokenpools1 table empty");
+
+        return _tokenpools1.begin()->liquidblc;
+    }
+
+    static int64_t normalize( const asset in, const uint8_t precision)
+    {
+        check(precision >= in.symbol.precision(), "ecurve::normalize: invalid normalize precision");
+        const int64_t res = in.amount * static_cast<int64_t>( pow(10, precision - in.symbol.precision() ));
+        check(res >= 0, "ecurve::normalize: overflow");
+
+        return res;
+    }
+
+    static asset denormalize( const int64_t amount, const uint8_t precision, const symbol sym)
+    {
+        check(precision >= sym.precision(), "ecurve::denormalize: invalid precision");
+        return asset{ amount / static_cast<int64_t>(pow( 10, precision - sym.precision() )), sym };
     }
 
     /**
      * ## STATIC `get_amount_out`
      *
      * Given an input amount of an asset and pair id, returns the calculated return
+     * Based on Curve.fi formula (with a tweak): https://www.curve.fi/stableswap-paper.pdf
      *
      * ### params
      *
      * - `{asset} in` - input amount
      * - `{symbol} out_sym` - out symbol
-     * - `{string} pair_id` - pair_id
      *
      * ### example
      *
      * ```c++
      * // Inputs
      * const asset in = asset { 10000, "USDT" };
-     * const symbol out_sym = symbol {"DAI,6"};
+     * const symbol out_sym = symbol { "DAI,6" };
      *
      * // Calculation
-     * const uint64_t amount_out = ecurve::get_amount_out( in, out_sym, pair_id );
-     * // => 9996
+     * const asset out = ecurve::get_amount_out( in, out_sym );
+     * // => 0.999612
      * ```
      */
-    static asset get_amount_out( const asset in, symbol out_sym )
+    static asset get_amount_out( const asset quantity, symbol out_sym )
     {
-        check(in.amount > 0, "eCurve: INSUFFICIENT_INPUT_AMOUNT");
-        // const auto D = get_D();
-        // const auto A = get_amplifier();
+        check(quantity.amount > 0, "ecurve: INSUFFICIENT_INPUT_AMOUNT");
+        const int128_t D = get_D();
+        const int128_t A = get_amplifier();
+        const auto fee = get_fee();
+        const auto reserves = get_reserves();
+        const int128_t n = reserves.size();
+        uint8_t precision = 0;
+        asset out_res, in_res;
+        for(const asset& res: reserves){
+            precision = max(precision, res.symbol.precision());
+            if(res.symbol == out_sym) out_res = res;
+            if(res.symbol == quantity.symbol) in_res = res;
+        }
 
+        check(out_res.amount > 0, "ecurve: No OUT reserves");
+        check(in_res.amount > 0, "ecurve: No IN reserves");
 
-        const int128_t D = 3148235739604;
-        const int128_t A = 65;
-        const int128_t n = 3;
+        int128_t b =  D / A / n - D;
+        int128_t c = D * D;
 
-        const int128_t res1 = 884297140073;
-        const int128_t res2 = 883095578413;
-        const int128_t res3 = 1382086859600; //1381986859600 + 100000000;
+        for(const asset& res: reserves){
+            if(res.symbol == out_sym) continue;
+            const int64_t amount = normalize(res.symbol == quantity.symbol ? res + quantity : res, precision);
+            b += amount;
+            c = (c / amount) * (D / n);
+        }
+        c = c / A / n / n;
 
-        const int128_t b = res1 + res3 - D + D/(A*n);
-        const int128_t c = ((((D * D / res1) * D) / res3) * D) / (A*n*n*n*n);
-        uint128_t x = res2, x_prev = 0;
+        int64_t amount_out = normalize(out_res, precision);
+        uint128_t x = amount_out, x_prev = 0;
         int i = 10;
         while ( x != x_prev && i--) {
             x_prev = x;
             x = (x * x + c) / (2 * x + b);
-            print("\nx: ", x);
         }
-        print("\nx final: ", (int64_t) x);
-        //check(reserve_out > x, "SX.Curve: INSUFFICIENT_RESERVE_OUT");
+        amount_out -= x;
+        amount_out -= fee * amount_out / 10000;
+        check(amount_out > 0, "ecurve: non-positive OUT");
 
-        int64_t amount_out = res2 - x;
-        amount_out -= 20 * amount_out / 10000;
-
-        print("\nout: ", (int64_t)amount_out);
-        check(false, "see print");
-
-        return { amount_out, out_sym } ;
+        return denormalize( amount_out, precision, out_sym );
     }
 }
