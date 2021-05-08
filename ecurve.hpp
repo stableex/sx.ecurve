@@ -77,7 +77,7 @@ namespace ecurve {
 
     static int64_t normalize( const asset in, const uint8_t precision)
     {
-        check(precision >= in.symbol.precision(), "ecurve::normalize: invalid normalize precision");
+        check(precision >= in.symbol.precision(), "ecurve: invalid normalize precision");
         const int64_t res = in.amount * static_cast<int64_t>( pow(10, precision - in.symbol.precision() ));
         check(res >= 0, "ecurve::normalize: overflow");
 
@@ -86,8 +86,67 @@ namespace ecurve {
 
     static asset denormalize( const int64_t amount, const uint8_t precision, const symbol sym)
     {
-        check(precision >= sym.precision(), "ecurve::denormalize: invalid precision");
+        check(precision >= sym.precision(), "ecurve: invalid denormalize precision");
         return asset{ amount / static_cast<int64_t>(pow( 10, precision - sym.precision() )), sym };
+    }
+
+    static uint64_t calc_D(const vector<asset> reserves, uint64_t A, uint8_t precision) {
+        const auto n = reserves.size();
+        vector<int64_t> res;
+        int64_t sum = 0;
+        for(const auto& r: reserves){
+            res.push_back(normalize(r, precision));
+            sum += res.back();
+        }
+
+        uint128_t D = sum;
+        uint128_t D_prev = 0;
+        uint64_t Ann = A * n;
+        print("\nCalculating D:");
+
+        int i = 10;
+        while ( D != D_prev && i--) {
+            uint128_t D_p = D;
+            for(auto r: res) D_p = D_p * D / (r * n + 1);
+            D_prev = D;
+            D = (Ann * sum + D_p * n) * D / ((Ann - 1) * D + (n + 1) * D_p);
+            print("\n  D: ", D);
+        }
+
+        return D;
+    }
+
+    static asset get_liquidity_out( const asset quantity, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token) {
+        auto reserves = get_reserves(code);
+        const auto supply = sx::utils::get_supply(lp_token);
+        const auto A = get_amplifier(code);
+        const auto fee = get_fee(code);
+        auto old_reserves = reserves;
+        const auto n = reserves.size();
+
+        print("\nSupply: ", supply);
+
+        const int128_t D0 = get_D(code);
+        print("\nD0: ", D0);
+        for(auto& res: reserves) {
+            if(quantity.symbol == res.symbol){
+                res += quantity;
+            }
+        }
+        const int128_t D1 = calc_D(reserves, A, lp_token.get_symbol().precision());
+        check(D1 != D0, "ecurve: No such reserve in the pool");
+
+        for(int i=0; i<reserves.size(); i++) {
+            auto ideal = D1 * old_reserves[i].amount / D0;
+            auto f = (ideal > reserves[i].amount ? ideal - reserves[i].amount : reserves[i].amount - ideal) * fee * n / (10000 * 4 * (n - 1));
+            reserves[i].amount -= f;
+        }
+        const int128_t D2 = calc_D(reserves, A, lp_token.get_symbol().precision());
+
+        const int64_t minted = (D2 - D0) * supply.amount / D0;
+        print("\nMinted: ", asset{ minted, lp_token.get_symbol() });
+
+        return asset{ minted, lp_token.get_symbol() };
     }
 
     /**
@@ -113,9 +172,11 @@ namespace ecurve {
      * // => 0.999612
      * ```
      */
-    static asset get_amount_out( const asset quantity, const symbol out_sym, const name code = ecurve::code)
+    static asset get_amount_out( const asset quantity, const symbol out_sym, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token)
     {
         check(quantity.amount > 0, "ecurve: INSUFFICIENT_INPUT_AMOUNT");
+        if(out_sym == lp_token.get_symbol()) return get_liquidity_out(quantity, code, lp_token);
+
         const int128_t D = get_D(code);
         const int128_t A = get_amplifier(code);
         const auto fee = get_fee(code);
@@ -159,64 +220,4 @@ namespace ecurve {
         return denormalize( amount_out, precision, out_sym );
     }
 
-    static uint64_t calc_D(const vector<asset> reserves, uint64_t A, uint8_t precision) {
-        const auto n = reserves.size();
-        vector<int64_t> res;
-        int64_t sum = 0;
-        for(const auto& r: reserves){
-            res.push_back(normalize(r, precision));
-            sum += res.back();
-        }
-
-        uint128_t D = sum;
-        uint128_t D_prev = 0;
-        uint64_t Ann = A * n;
-        print("\nCalculating D:");
-
-        int i = 10;
-        while ( D != D_prev && i--) {
-            uint128_t D_p = D;
-            for(auto r: res) D_p = D_p * D / (r * n + 1);
-            D_prev = D;
-            D = (Ann * sum + D_p * n) * D / ((Ann - 1) * D + (n + 1) * D_p);
-            print("\n  D: ", D);
-        }
-
-        return D;
-    }
-
-    static asset get_liquidity_out( const asset quantity, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token) {
-        auto reserves = get_reserves(code);
-        const auto supply = sx::utils::get_supply(lp_token);
-        const auto price = get_price(code);
-        const auto A = get_amplifier(code);
-        const auto fee = get_fee(code);
-        auto old_reserves = reserves;
-        const auto n = reserves.size();
-
-        print("\nSupply: ", supply);
-        print("\nTable D: ", get_D(code));
-
-        const int128_t D0 = calc_D(reserves, A, lp_token.get_symbol().precision());
-        for(auto& res: reserves) {
-            if(quantity.symbol == res.symbol){
-                res += quantity;
-            }
-        }
-        const int128_t D1 = calc_D(reserves, A, lp_token.get_symbol().precision());
-        check(D1 != D0, "No such reserve in the pool");
-
-        for(int i=0; i<reserves.size(); i++) {
-            auto ideal = D1 * old_reserves[i].amount / D0;
-            auto f = (ideal > reserves[i].amount ? ideal - reserves[i].amount : reserves[i].amount - ideal) * fee * n / (10000 * 4 * (n - 1));
-            print("\n   fee: ", asset{ static_cast<int64_t>(f), reserves[i].symbol });
-            reserves[i].amount -= f;
-        }
-        const int128_t D2 = calc_D(reserves, A, lp_token.get_symbol().precision());
-
-        const int64_t minted = (D2 - D0) * (supply.amount) / D0;
-        print("\nMinted: ", asset{ minted, lp_token.get_symbol() });
-
-        return asset{ minted, lp_token.get_symbol() };
-    }
 }
