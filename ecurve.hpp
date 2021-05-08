@@ -9,11 +9,7 @@ namespace ecurve {
     const name id = "ecurve"_n;
     const name code = "ecurve3pool1"_n;
     const std::string description = "eCurve Converter";
-
-    const extended_symbol DAI  { symbol{"DAI", 6}, "dadusdtokens"_n };
-    const extended_symbol ECRV  { symbol{"ECRV", 6}, "ecurvetoken1"_n };
-    const extended_symbol DUSDC  { symbol{"USDC", 6}, "dadusdtokens"_n };
-    const extended_symbol USDT { symbol{"USDT",4}, "tethertether"_n };
+    const extended_symbol lp_token = { symbol{"TRIPOOL",6}, "ecurvelp1111"_n };
 
     struct [[eosio::table]] tokenpools1_row {
         uint64_t        id;
@@ -44,28 +40,35 @@ namespace ecurve {
     typedef eosio::singleton< "config"_n, config_row > config;
 
 
-    static uint64_t get_amplifier() {
+    static uint64_t get_amplifier(const name code) {
         config _config( code, code.value );
         check( _config.get().initial_A == _config.get().future_A, "ecurve: Amp sliding not implemented" );
 
         return _config.get().initial_A;     // TODO: handle Amplifier sliding
     }
 
-    static uint64_t get_fee() {
+    static uint64_t get_fee(const name code) {
         config _config( code, code.value );
 
         return _config.get().fee * 10000;
     }
 
 
-    static uint64_t get_D() {
+    static uint64_t get_D(const name code) {
         priceinfo1 _priceinfo1( code, code.value );
         check(_priceinfo1.begin() != _priceinfo1.end(), "ecurve: priceinfo1 table empty");
 
         return _priceinfo1.begin()->D;
     }
 
-    static vector<asset> get_reserves() {
+    static double get_price(const name code) {
+        priceinfo1 _priceinfo1( code, code.value );
+        check(_priceinfo1.begin() != _priceinfo1.end(), "ecurve: priceinfo1 table empty");
+
+        return _priceinfo1.begin()->price;
+    }
+
+    static vector<asset> get_reserves(const name code) {
         tokenpools1 _tokenpools1( code, code.value );
         check(_tokenpools1.begin() != _tokenpools1.end(), "ecurve: tokenpools1 table empty");
 
@@ -110,17 +113,19 @@ namespace ecurve {
      * // => 0.999612
      * ```
      */
-    static asset get_amount_out( const asset quantity, symbol out_sym )
+    static asset get_amount_out( const asset quantity, const symbol out_sym, const name code = ecurve::code)
     {
         check(quantity.amount > 0, "ecurve: INSUFFICIENT_INPUT_AMOUNT");
-        const int128_t D = get_D();
-        const int128_t A = get_amplifier();
-        const auto fee = get_fee();
-        const auto reserves = get_reserves();
+        const int128_t D = get_D(code);
+        const int128_t A = get_amplifier(code);
+        const auto fee = get_fee(code);
+        const auto reserves = get_reserves(code);
         const int128_t n = reserves.size();
         uint8_t precision = 0;
         asset out_res, in_res;
+        print("\n", quantity, " => ", out_sym);
         for(const asset& res: reserves){
+            print("\n", res);
             precision = max(precision, res.symbol.precision());
             if(res.symbol == out_sym) out_res = res;
             if(res.symbol == quantity.symbol) in_res = res;
@@ -152,5 +157,66 @@ namespace ecurve {
         check(amount_out > 0, "ecurve: non-positive OUT");
 
         return denormalize( amount_out, precision, out_sym );
+    }
+
+    static uint64_t calc_D(const vector<asset> reserves, uint64_t A, uint8_t precision) {
+        const auto n = reserves.size();
+        vector<int64_t> res;
+        int64_t sum = 0;
+        for(const auto& r: reserves){
+            res.push_back(normalize(r, precision));
+            sum += res.back();
+        }
+
+        uint128_t D = sum;
+        uint128_t D_prev = 0;
+        uint64_t Ann = A * n;
+        print("\nCalculating D:");
+
+        int i = 10;
+        while ( D != D_prev && i--) {
+            uint128_t D_p = D;
+            for(auto r: res) D_p = D_p * D / (r * n + 1);
+            D_prev = D;
+            D = (Ann * sum + D_p * n) * D / ((Ann - 1) * D + (n + 1) * D_p);
+            print("\n  D: ", D);
+        }
+
+        return D;
+    }
+
+    static asset get_liquidity_out( const asset quantity, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token) {
+        auto reserves = get_reserves(code);
+        const auto supply = sx::utils::get_supply(lp_token);
+        const auto price = get_price(code);
+        const auto A = get_amplifier(code);
+        const auto fee = get_fee(code);
+        auto old_reserves = reserves;
+        const auto n = reserves.size();
+
+        print("\nSupply: ", supply);
+        print("\nTable D: ", get_D(code));
+
+        const int128_t D0 = calc_D(reserves, A, lp_token.get_symbol().precision());
+        for(auto& res: reserves) {
+            if(quantity.symbol == res.symbol){
+                res += quantity;
+            }
+        }
+        const int128_t D1 = calc_D(reserves, A, lp_token.get_symbol().precision());
+        check(D1 != D0, "No such reserve in the pool");
+
+        for(int i=0; i<reserves.size(); i++) {
+            auto ideal = D1 * old_reserves[i].amount / D0;
+            auto f = (ideal > reserves[i].amount ? ideal - reserves[i].amount : reserves[i].amount - ideal) * fee * n / (10000 * 4 * (n - 1));
+            print("\n   fee: ", asset{ static_cast<int64_t>(f), reserves[i].symbol });
+            reserves[i].amount -= f;
+        }
+        const int128_t D2 = calc_D(reserves, A, lp_token.get_symbol().precision());
+
+        const int64_t minted = (D2 - D0) * (supply.amount) / D0;
+        print("\nMinted: ", asset{ minted, lp_token.get_symbol() });
+
+        return asset{ minted, lp_token.get_symbol() };
     }
 }
