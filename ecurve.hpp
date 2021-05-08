@@ -1,6 +1,7 @@
 #pragma once
 
 #include <eosio/asset.hpp>
+#include <sx.utils/utils.hpp>
 
 namespace ecurve {
 
@@ -26,6 +27,14 @@ namespace ecurve {
         uint64_t primary_key() const { return id; }
     };
     typedef eosio::multi_index< "priceinfo1"_n, priceinfo1_row > priceinfo1;
+
+    struct [[eosio::table]] tokeninfo2_row {
+        uint64_t        id;
+        symbol          tokensym;
+        name            tokencontract;
+        uint64_t primary_key() const { return id; }
+    };
+    typedef eosio::multi_index< "tokeninfo2"_n, tokeninfo2_row > tokeninfo2;
 
     struct [[eosio::table]] config_row {
         uint64_t        initial_A;
@@ -73,6 +82,17 @@ namespace ecurve {
         check(_tokenpools1.begin() != _tokenpools1.end(), "ecurve: tokenpools1 table empty");
 
         return _tokenpools1.begin()->liquidblc;
+    }
+
+    static vector<extended_symbol> get_reserve_syms(const name code = ecurve::code) {
+        vector<extended_symbol> res;
+        tokeninfo2 _tokeninfo2( code, code.value );
+        check(_tokeninfo2.begin() != _tokeninfo2.end(), "ecurve: _tokeninfo2 table empty");
+        for(const auto& row: _tokeninfo2) {
+            res.push_back({row.tokensym, row.tokencontract});
+        }
+
+        return res;
     }
 
     static int64_t normalize( const asset in, const uint8_t precision)
@@ -218,6 +238,35 @@ namespace ecurve {
         check(amount_out > 0, "ecurve: non-positive OUT");
 
         return denormalize( amount_out, precision, out_sym );
+    }
+
+    static void complete_transfer(const name trader, const asset in, const symbol out_sym, const name code = ecurve::code)
+    {
+        auto quantities = get_reserves(code);
+        bool exchange = false;
+        for(auto& quan: quantities){
+            quan.amount = 0;
+            if(in.symbol == quan.symbol) quan.amount = in.amount;
+            if(quan.symbol == out_sym) exchange = true;
+        }
+        if(exchange){
+            action(
+                permission_level{trader,"active"_n},
+                code,
+                "exchange"_n,
+                std::make_tuple(trader, in, asset {0, out_sym})
+            ).send();
+            print("\nExchange ", trader, ", ", in, ", ", asset {0, out_sym});
+        }
+        else {
+            action(
+                permission_level{trader,"active"_n},
+                code,
+                "deposit"_n,
+                std::make_tuple(trader, quantities, asset {0, out_sym})
+            ).send();
+            print("\nDeposit for ", trader, ": (", quantities[0], ", ", quantities[1], ", ",quantities[2], "), out: ",asset {0, out_sym});
+        }
     }
 
 }
