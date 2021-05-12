@@ -122,7 +122,6 @@ namespace ecurve {
         uint128_t D = sum;
         uint128_t D_prev = 0;
         uint64_t Ann = A * n;
-        print("\nCalculating D:");
 
         int i = 10;
         while ( D != D_prev && i--) {
@@ -130,7 +129,6 @@ namespace ecurve {
             for(auto r: res) D_p = D_p * D / (r * n + 1);
             D_prev = D;
             D = (Ann * sum + D_p * n) * D / ((Ann - 1) * D + (n + 1) * D_p);
-            print("\n  D: ", D);
         }
 
         return D;
@@ -144,10 +142,7 @@ namespace ecurve {
         auto old_reserves = reserves;
         const auto n = reserves.size();
 
-        print("\nSupply: ", supply);
-
-        const int128_t D0 = get_D(code);
-        print("\nD0: ", D0);
+        const int128_t D0 = calc_D(reserves, A, lp_token.get_symbol().precision());
         for(auto& res: reserves) {
             if(quantity.symbol == res.symbol){
                 res += quantity;
@@ -164,7 +159,6 @@ namespace ecurve {
         const int128_t D2 = calc_D(reserves, A, lp_token.get_symbol().precision());
 
         const int64_t minted = (D2 - D0) * supply.amount / D0;
-        print("\nMinted: ", asset{ minted, lp_token.get_symbol() });
 
         return asset{ minted, lp_token.get_symbol() };
     }
@@ -197,16 +191,13 @@ namespace ecurve {
         check(quantity.amount > 0, "ecurve: INSUFFICIENT_INPUT_AMOUNT");
         if(out_sym == lp_token.get_symbol()) return get_liquidity_out(quantity, code, lp_token);
 
-        const int128_t D = get_D(code);
         const int128_t A = get_amplifier(code);
         const auto fee = get_fee(code);
         const auto reserves = get_reserves(code);
         const int128_t n = reserves.size();
         uint8_t precision = 0;
         asset out_res, in_res;
-        print("\n", quantity, " => ", out_sym);
         for(const asset& res: reserves){
-            print("\n", res);
             precision = max(precision, res.symbol.precision());
             if(res.symbol == out_sym) out_res = res;
             if(res.symbol == quantity.symbol) in_res = res;
@@ -215,6 +206,7 @@ namespace ecurve {
         check(out_res.amount > 0, "ecurve: No OUT reserves");
         check(in_res.amount > 0, "ecurve: No IN reserves");
 
+        const int128_t D = calc_D(reserves, A, lp_token.get_symbol().precision());
         int128_t b =  D / A / n - D;
         int128_t c = D * D;
 
@@ -227,7 +219,7 @@ namespace ecurve {
         c = c / A / n / n;
 
         int64_t amount_out = normalize(out_res, precision);
-        uint128_t x = amount_out, x_prev = 0;
+        int128_t x = amount_out, x_prev = 0;
         int i = 10;
         while ( x != x_prev && i--) {
             x_prev = x;
