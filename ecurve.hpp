@@ -28,6 +28,13 @@ namespace ecurve {
     };
     typedef eosio::multi_index< "priceinfo1"_n, priceinfo1_row > priceinfo1;
 
+    struct [[eosio::table]] deposits1_row {
+        asset         balance;
+
+        uint64_t primary_key() const { return balance.symbol.code().raw(); }
+    };
+    typedef eosio::multi_index< "deposits1"_n, deposits1_row > deposits1;
+
     struct [[eosio::table]] tokeninfo2_row {
         uint64_t        id;
         symbol          tokensym;
@@ -232,23 +239,26 @@ namespace ecurve {
         return denormalize( amount_out, precision, out_sym );
     }
 
+    //must be called after deposits already made
     static void complete_transfer(const name trader, const asset in, const symbol out_sym, const name code = ecurve::code)
     {
         auto quantities = get_reserves(code);
         bool exchange = false;
+        deposits1 _deposits1( code, trader.value );
+        const auto deposited = _deposits1.get(in.symbol.code().raw(), "ecurve: no deposit found").balance;
         for(auto& quan: quantities){
             quan.amount = 0;
-            if(in.symbol == quan.symbol) quan.amount = in.amount;
+            if(deposited.symbol == quan.symbol) quan.amount = deposited.amount;
             if(quan.symbol == out_sym) exchange = true;
         }
+
         if(exchange){
             action(
                 permission_level{trader,"active"_n},
                 code,
                 "exchange"_n,
-                std::make_tuple(trader, in, asset {0, out_sym})
+                std::make_tuple(trader, deposited, asset {0, out_sym})
             ).send();
-            print("\nExchange ", trader, ", ", in, ", ", asset {0, out_sym});
         }
         else {
             action(
@@ -257,8 +267,8 @@ namespace ecurve {
                 "deposit"_n,
                 std::make_tuple(trader, quantities, asset {0, out_sym})
             ).send();
-            print("\nDeposit for ", trader, ": (", quantities[0], ", ", quantities[1], ", ",quantities[2], "), out: ",asset {0, out_sym});
         }
+
     }
 
 }
