@@ -141,7 +141,7 @@ namespace ecurve {
         return D;
     }
 
-    static asset get_liquidity_out( const asset quantity, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token) {
+    static asset get_deposit_out( const asset quantity, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token) {
         auto reserves = get_reserves(code);
         const auto supply = sx::utils::get_supply(lp_token);
         const auto A = get_amplifier(code);
@@ -166,9 +166,31 @@ namespace ecurve {
         const int128_t D2 = calc_D(reserves, A, lp_token.get_symbol().precision());
 
         const int64_t minted = (D2 - D0) * supply.amount / D0;
+        check(minted > 0, "ecurve: non-positive deposit");
 
         return asset{ minted, lp_token.get_symbol() };
     }
+
+    static asset get_withdraw_out1( const asset quantity, const symbol sym_out, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token) {
+        auto reserves = get_reserves(code);
+        const auto supply = sx::utils::get_supply(lp_token);
+        const auto fee = get_fee(code);
+
+        int128_t out_amount = 0;
+        for(auto& res: reserves) {
+            if(sym_out == res.symbol){
+                out_amount = res.amount;
+            }
+        }
+        check(out_amount, "ecurve: no such reserve to withdraw");
+
+        int64_t withdraw_amount = out_amount * quantity.amount / supply.amount;
+        withdraw_amount -= fee * withdraw_amount / 10000;
+        check(withdraw_amount > 0, "ecurve: non-positive withdrawal");
+
+        return asset{ withdraw_amount, sym_out };
+    }
+    static asset get_withdraw_out( const asset quantity, const symbol sym_out, const name code, const extended_symbol lp_token);
 
     /**
      * ## STATIC `get_amount_out`
@@ -196,7 +218,8 @@ namespace ecurve {
     static asset get_amount_out( const asset quantity, const symbol out_sym, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token)
     {
         check(quantity.amount > 0, "ecurve: INSUFFICIENT_INPUT_AMOUNT");
-        if(out_sym == lp_token.get_symbol()) return get_liquidity_out(quantity, code, lp_token);
+        if(out_sym == lp_token.get_symbol()) return get_deposit_out(quantity, code, lp_token);
+        if(quantity.symbol == lp_token.get_symbol()) return get_withdraw_out(quantity, out_sym, code, lp_token);
 
         const int128_t A = get_amplifier(code);
         const auto fee = get_fee(code);
@@ -239,35 +262,70 @@ namespace ecurve {
         return denormalize( amount_out, precision, out_sym );
     }
 
+    static asset get_withdraw_out( const asset quantity, const symbol sym_out, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token) {
+        auto reserves = get_reserves(code);
+        const auto supply = sx::utils::get_supply(lp_token);
+        const auto fee = 0;//get_fee(code);
+
+        asset out = {0, sym_out};
+        for(auto& res: reserves) {
+            int128_t am = res.amount;
+            asset quan = { static_cast<int64_t>(am * quantity.amount / supply.amount), res.symbol };
+            out += sym_out == res.symbol ? (quan - quan * fee / 10000) : get_amount_out(quan, sym_out, code, lp_token);
+        }
+
+        return out;
+    }
+
+
     //must be called after deposits already made
     static void complete_transfer(const name trader, const asset in, const symbol out_sym, const name code = ecurve::code)
     {
         auto quantities = get_reserves(code);
-        bool exchange = false;
+        bool in_sym_res = false, out_sym_res = false;
+        print("\ncode: ", code, ", trader: ", trader, ", in: ", in);
         deposits1 _deposits1( code, trader.value );
         const auto deposited = _deposits1.get(in.symbol.code().raw(), "ecurve: no deposit found").balance;
         for(auto& quan: quantities){
             quan.amount = 0;
             if(deposited.symbol == quan.symbol) quan.amount = deposited.amount;
-            if(quan.symbol == out_sym) exchange = true;
+            if(quan.symbol == out_sym) out_sym_res = true;
+            if(quan.symbol == in.symbol) in_sym_res = true;
         }
 
-        if(exchange){
+        print("\n in_sym_res: ", in_sym_res, ", out_sym_res: ", out_sym_res);
+
+        if(in_sym_res && out_sym_res){  // both symbols in reserves - basic exchange
             action(
                 permission_level{trader,"active"_n},
                 code,
                 "exchange"_n,
                 std::make_tuple(trader, deposited, asset {0, out_sym})
             ).send();
+            print("\n exchange");
         }
-        else {
+        else if(in_sym_res) {       //only in symbol in reserves - deposit
             action(
                 permission_level{trader,"active"_n},
                 code,
                 "deposit"_n,
                 std::make_tuple(trader, quantities, asset {0, out_sym})
             ).send();
+            print("\n deposit");
         }
+        else if(out_sym_res) {      //only out symbol in reserves - withdraw
+            action(
+                permission_level{trader,"active"_n},
+                code,
+                "withdrawone"_n,
+                std::make_tuple(trader, deposited, asset {0, out_sym})
+            ).send();
+            print("\n withdrawone: ", in.symbol, " => ", out_sym);
+        }
+        else {
+            check(false, "ecurve: invalid exchange symbols");
+        }
+        //check(out_sym.code().to_string() == "TRIPOOL", "BYE");
 
     }
 
