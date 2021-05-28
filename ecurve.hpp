@@ -69,6 +69,11 @@ namespace ecurve {
         return _config.get().fee * 10000;
     }
 
+    static uint64_t get_adminfee(const name code) {
+        config _config( code, code.value );
+
+        return _config.get().fee * _config.get().adminfee * 10000;
+    }
 
     static uint64_t get_D(const name code) {
         priceinfo1 _priceinfo1( code, code.value );
@@ -171,25 +176,6 @@ namespace ecurve {
         return asset{ minted, lp_token.get_symbol() };
     }
 
-    static asset get_withdraw_out1( const asset quantity, const symbol sym_out, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token) {
-        auto reserves = get_reserves(code);
-        const auto supply = sx::utils::get_supply(lp_token);
-        const auto fee = get_fee(code);
-
-        int128_t out_amount = 0;
-        for(auto& res: reserves) {
-            if(sym_out == res.symbol){
-                out_amount = res.amount;
-            }
-        }
-        check(out_amount, "ecurve: no such reserve to withdraw");
-
-        int64_t withdraw_amount = out_amount * quantity.amount / supply.amount;
-        withdraw_amount -= fee * withdraw_amount / 10000;
-        check(withdraw_amount > 0, "ecurve: non-positive withdrawal");
-
-        return asset{ withdraw_amount, sym_out };
-    }
     static asset get_withdraw_out( const asset quantity, const symbol sym_out, const name code, const extended_symbol lp_token);
 
     /**
@@ -265,13 +251,13 @@ namespace ecurve {
     static asset get_withdraw_out( const asset quantity, const symbol sym_out, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token) {
         auto reserves = get_reserves(code);
         const auto supply = sx::utils::get_supply(lp_token);
-        const auto fee = 0;//get_fee(code);
+        const auto adminfee = get_adminfee();
 
         asset out = {0, sym_out};
         for(auto& res: reserves) {
             int128_t am = res.amount;
             asset quan = { static_cast<int64_t>(am * quantity.amount / supply.amount), res.symbol };
-            out += sym_out == res.symbol ? (quan - quan * fee / 10000) : get_amount_out(quan, sym_out, code, lp_token);
+            out += sym_out == res.symbol ? (quan + quan * adminfee / 10000) : get_amount_out(quan, sym_out, code, lp_token);
         }
 
         return out;
