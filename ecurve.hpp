@@ -72,7 +72,7 @@ namespace ecurve {
     static uint64_t get_adminfee(const name code) {
         config _config( code, code.value );
 
-        return _config.get().fee * _config.get().adminfee * 10000;
+        return _config.get().fee * _config.get().admin_fee * 10000;
     }
 
     static uint64_t get_D(const name code) {
@@ -251,7 +251,7 @@ namespace ecurve {
     static asset get_withdraw_out( const asset quantity, const symbol sym_out, const name code = ecurve::code, const extended_symbol lp_token = ecurve::lp_token) {
         auto reserves = get_reserves(code);
         const auto supply = sx::utils::get_supply(lp_token);
-        const auto adminfee = get_adminfee();
+        const auto adminfee = get_adminfee(code);
 
         asset out = {0, sym_out};
         for(auto& res: reserves) {
