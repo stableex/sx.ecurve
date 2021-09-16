@@ -58,9 +58,9 @@ namespace ecurve {
 
     static uint64_t get_amplifier(const name code) {
         config _config( code, code.value );
-        check( _config.get().initial_A == _config.get().future_A, "ecurve: Amp sliding not implemented" );
+        //check( _config.get().initial_A == _config.get().future_A, "ecurve: Amp sliding not implemented" );
 
-        return _config.get().initial_A;     // TODO: handle Amplifier sliding
+        return _config.get().future_A;     // ecurve amplifier is changed immediately
     }
 
     static uint64_t get_fee(const name code) {
